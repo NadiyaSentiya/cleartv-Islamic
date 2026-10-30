@@ -1,3 +1,98 @@
+
+#!/usr/bin/env python3
+"""ADB CLI backend for Clear TV Islamic on Termux."""
+
+import os
+import sys
+import shutil
+import subprocess
+
+HOST = os.environ.get("TV_HOST")
+PORT = os.environ.get("TV_PORT", "5555")
+
+if not HOST:
+    sys.exit("Set TV_HOST terlebih dahulu.")
+
+ADB = shutil.which("adb")
+
+if not ADB:
+    sys.exit("ADB tidak ditemukan. Jalankan: pkg install android-tools")
+
+SERIAL = f"{HOST}:{PORT}"
+
+
+def adb_connect():
+    subprocess.run(
+        [ADB, "connect", SERIAL],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+
+    result = subprocess.run(
+        [ADB, "-s", SERIAL, "get-state"],
+        capture_output=True,
+        text=True
+    )
+
+    if result.returncode != 0 or result.stdout.strip() != "device":
+        sys.exit("TV belum terhubung melalui ADB: " + result.stderr)
+
+
+def shell(command):
+    result = subprocess.run(
+        [ADB, "-s", SERIAL, "shell", command],
+        capture_output=True,
+        text=True
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr)
+    return result.stdout
+
+
+def main():
+    args = sys.argv[1:]
+    adb_connect()
+
+    if not args or args == ["--probe"]:
+        props = [
+            "ro.product.model",
+            "ro.product.device",
+            "ro.build.version.release",
+            "ro.build.version.sdk",
+            "ro.build.display.id",
+            "ro.product.manufacturer",
+        ]
+
+        for prop in props:
+            print(f"{prop} = {shell('getprop ' + prop).strip()}")
+
+    elif args[0] == "--push" and len(args) == 3:
+        subprocess.run(
+            [ADB, "-s", SERIAL, "push", args[1], args[2]],
+            check=True
+        )
+
+    elif args[0] == "--pull" and len(args) == 3:
+        subprocess.run(
+            [ADB, "-s", SERIAL, "pull", args[1], args[2]],
+            check=True
+        )
+
+    elif args[0] == "--batch":
+        for line in sys.stdin:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            print("$", line)
+            print(shell(line), end="", flush=True)
+
+    else:
+        print(shell(" ".join(args)), end="")
+
+
+if __name__ == "__main__":
+    main()
 #!/usr/bin/env python3
 """Minimal ADB-over-TCP client for an Android TV using adb_shell (no adb binary needed).
 

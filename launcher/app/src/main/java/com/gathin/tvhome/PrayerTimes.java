@@ -83,19 +83,59 @@ final class PrayerTimes {
         File out = file(ctx, zone);
         if (out == null) return false;
         try {
-            byte[] body = get("https://www.e-solat.gov.my/index.php?r=esolatApi/TakwimSolat&period=year&zone="
-                    + java.net.URLEncoder.encode(zone, "UTF-8"), 512 * 1024);
-            JSONArray days = new JSONObject(new String(body, StandardCharsets.UTF_8)).optJSONArray("prayerTime");
-            if (days == null || days.length() == 0) throw new IllegalStateException("no prayerTime");
+            int year = Calendar.getInstance().get(Calendar.YEAR);
+            String url = "https://sajadah.org/api/v1/times/id/"
+                    + zone + "/" + year + ".json";
+            byte[] body = get(url, 512 * 1024);
+
+            JSONObject root = new JSONObject(new String(body, StandardCharsets.UTF_8));
+            JSONArray fields = root.optJSONArray("fields");
+            JSONArray sourceDays = root.optJSONArray("days");
+            if (fields == null || sourceDays == null || sourceDays.length() == 0)
+                throw new IllegalStateException("invalid Indonesian prayer data");
+
+            String[] names = {"date", "fajr", "dhuhr", "asr", "maghrib", "isha"};
+            int[] indexes = new int[names.length];
+
+            for (int k = 0; k < names.length; k++) {
+                indexes[k] = -1;
+                for (int j = 0; j < fields.length(); j++) {
+                    if (names[k].equals(fields.optString(j))) {
+                        indexes[k] = j;
+                        break;
+                    }
+                }
+                if (indexes[k] < 0)
+                    throw new IllegalStateException("missing field " + names[k]);
+            }
+
+            JSONArray days = new JSONArray();
+            for (int i = 0; i < sourceDays.length(); i++) {
+                JSONArray row = sourceDays.optJSONArray(i);
+                if (row == null) continue;
+
+                JSONObject day = new JSONObject();
+                for (int k = 0; k < names.length; k++) {
+                    day.put(names[k], row.optString(indexes[k], ""));
+                }
+                day.put("hijri", "");
+                days.put(day);
+            }
+
+            if (days.length() == 0)
+                throw new IllegalStateException("no valid days");
+
             File tmp = new File(out.getPath() + ".new");
             try (OutputStream os = new FileOutputStream(tmp)) {
                 os.write(days.toString().getBytes(StandardCharsets.UTF_8));
             }
-            if (!tmp.renameTo(out)) throw new IllegalStateException("rename failed");
-            Log.i(TAG, "saved " + days.length() + " days for " + zone);
+            if (!tmp.renameTo(out))
+                throw new IllegalStateException("rename failed");
+
+            Log.i(TAG, "saved " + days.length() + " Indonesian days for " + zone);
             return true;
         } catch (Exception e) {
-            Log.w(TAG, "fetch failed for " + zone + ": " + e.getMessage());
+            Log.w(TAG, "Indonesian prayer fetch failed: " + e.getMessage());
             return false;
         }
     }
@@ -109,16 +149,33 @@ final class PrayerTimes {
     /** "21-Okt-2026" (or "21-Oct-2026") to "21-10-2026"; "" when it is not a date. */
     static String dateKey(String date) {
         String[] p = date.trim().split("-");
-        if (p.length != 3 || p[1].length() < 3) return "";
-        String mon = p[1].substring(0, 3).toLowerCase(Locale.ROOT);
-        int m = -1;
-        for (int i = 0; i < MONTHS.length; i++) if (MONTHS[i].equals(mon)) m = i;
-        // English spellings where they differ from Malay.
-        if (m < 0) m = "mar".equals(mon) ? 2 : "may".equals(mon) ? 4 : "aug".equals(mon) ? 7
-                : "oct".equals(mon) ? 9 : "dec".equals(mon) ? 11 : -1;
-        if (m < 0) return "";
+        if (p.length != 3) return "";
+
         try {
-            return String.format(Locale.ROOT, "%02d-%02d-%04d", Integer.parseInt(p[0]), m + 1, Integer.parseInt(p[2]));
+            // Indonesian API: yyyy-MM-dd
+            if (p[0].length() == 4) {
+                return String.format(Locale.ROOT, "%02d-%02d-%04d",
+                        Integer.parseInt(p[2]),
+                        Integer.parseInt(p[1]),
+                        Integer.parseInt(p[0]));
+            }
+
+            // Legacy JAKIM format: dd-Mmm-yyyy
+            if (p[1].length() < 3) return "";
+            String mon = p[1].substring(0, 3).toLowerCase(Locale.ROOT);
+            int m = -1;
+            for (int i = 0; i < MONTHS.length; i++)
+                if (MONTHS[i].equals(mon)) m = i;
+
+            if (m < 0) m = "mar".equals(mon) ? 2 :
+                    "may".equals(mon) ? 4 :
+                    "aug".equals(mon) ? 7 :
+                    "oct".equals(mon) ? 9 :
+                    "dec".equals(mon) ? 11 : -1;
+
+            if (m < 0) return "";
+            return String.format(Locale.ROOT, "%02d-%02d-%04d",
+                    Integer.parseInt(p[0]), m + 1, Integer.parseInt(p[2]));
         } catch (NumberFormatException e) {
             return "";
         }
